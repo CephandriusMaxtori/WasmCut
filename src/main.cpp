@@ -483,6 +483,12 @@ void draw_preview() {
       state.playhead_us = wasmcut::model::seconds_to_time(preview_seconds);
       seek_selected_preview();
     }
+    if (ImGui::Button("Export clip (remux)")) {
+      pause_preview();
+      wasmcut::platform::request_export(
+          wasmcut::model::time_to_seconds(clip->source_in),
+          wasmcut::model::time_to_seconds(clip->source_out));
+    }
   } else {
     ImGui::TextWrapped("The selected clip is no longer available.");
   }

@@ -9,6 +9,7 @@ type WasmcutModule = {
 type WasmcutBridge = {
   requestImport: () => void;
   requestProbe: () => Promise<void>;
+  requestExport: (sourceIn: number, sourceOut: number) => Promise<void>;
   playVideo: () => void;
   pauseVideo: () => void;
   seekVideo: (seconds: number) => void;
@@ -32,6 +33,7 @@ let activeFile: File | null = null;
 let ffmpegLoad: Promise<FFmpeg> | null = null;
 let thumbnailUrl: string | null = null;
 let videoUrl: string | null = null;
+let mediaJobInProgress = false;
 let setStatus: ((value: string) => unknown) | null = null;
 let setMediaInfo: ((name: string, size: number, duration: number) => unknown) | null = null;
 let setProgress: ((value: number) => unknown) | null = null;
@@ -175,7 +177,12 @@ async function requestProbe() {
     updateStatus("Import a media file first.");
     return;
   }
+  if (mediaJobInProgress) {
+    updateStatus("Another media job is already running.");
+    return;
+  }
 
+  mediaJobInProgress = true;
   const inputName = `input-${Date.now()}.${fileExtension(activeFile)}`;
   const outputName = `probe-${Date.now()}.jpg`;
 
@@ -217,6 +224,86 @@ async function requestProbe() {
     const message = error instanceof Error ? error.message : String(error);
     setProgress?.(0.0);
     updateStatus(`FFmpeg probe failed: ${message}`);
+  } finally {
+    mediaJobInProgress = false;
+  }
+}
+
+async function requestExport(sourceIn: number, sourceOut: number) {
+  if (activeFile === null) {
+    updateStatus("Import a media file before exporting.");
+    return;
+  }
+  if (mediaJobInProgress) {
+    updateStatus("Another media job is already running.");
+    return;
+  }
+
+  const start = Math.max(0, sourceIn);
+  const end = Math.max(start, sourceOut);
+  const duration = end - start;
+  if (duration <= 0) {
+    updateStatus("The clip range is empty.");
+    return;
+  }
+
+  mediaJobInProgress = true;
+  const sourceExtension = fileExtension(activeFile);
+  const outputExtension = sourceExtension === "mp4" || sourceExtension === "mov" || sourceExtension === "webm"
+    ? sourceExtension
+    : "webm";
+  const inputName = `export-input-${Date.now()}.${sourceExtension}`;
+  const outputName = `wasmcut-export-${Date.now()}.${outputExtension}`;
+  try {
+    setProgress?.(0.0);
+    updateStatus("Loading ffmpeg.wasm for export...");
+    const instance = await loadFFmpeg();
+    updateStatus("Preparing media for export...");
+    await instance.writeFile(inputName, new Uint8Array(await activeFile.arrayBuffer()));
+    updateStatus(`Cutting ${outputExtension.toUpperCase()} export...`);
+    await instance.exec([
+      "-ss",
+      start.toFixed(6),
+      "-i",
+      inputName,
+      "-t",
+      duration.toFixed(6),
+      "-map",
+      "0:v:0",
+      "-map",
+      "0:a:0?",
+      "-c:v",
+      "copy",
+      "-c:a",
+      "copy",
+      "-f",
+      outputExtension === "mp4" ? "mp4" : outputExtension === "mov" ? "mov" : "webm",
+      outputName
+    ]);
+    const output = await instance.readFile(outputName);
+    if (typeof output === "string") {
+      throw new Error("FFmpeg returned text instead of video data");
+    }
+    const mimeType = outputExtension === "mp4" ? "video/mp4" : outputExtension === "mov" ? "video/quicktime" : "video/webm";
+    const blob = new Blob([new Uint8Array(output) as unknown as BlobPart], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = outputName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setProgress?.(1.0);
+    updateStatus(`Export complete: ${output.byteLength} bytes`);
+    await instance.deleteFile(inputName);
+    await instance.deleteFile(outputName);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    setProgress?.(0.0);
+    updateStatus(`Export failed: ${message}`);
+  } finally {
+    mediaJobInProgress = false;
   }
 }
 
@@ -224,6 +311,7 @@ export function createBridge(): WasmcutBridge {
   const bridge: WasmcutBridge = {
     requestImport: () => fileInput?.click(),
     requestProbe,
+    requestExport,
     playVideo,
     pauseVideo,
     seekVideo,

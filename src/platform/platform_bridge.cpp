@@ -51,6 +51,15 @@ void seek_video(double seconds) {
 #endif
 }
 
+void request_export(double source_in, double source_out) {
+#ifdef __EMSCRIPTEN__
+  const emscripten::val bridge = emscripten::val::global("wasmcutBridge");
+  if (!bridge.isUndefined()) {
+    bridge.call<void>("requestExport", source_in, source_out);
+  }
+#endif
+}
+
 bool upload_video_frame() {
 #ifdef __EMSCRIPTEN__
   const emscripten::val bridge = emscripten::val::global("wasmcutBridge");
