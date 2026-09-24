@@ -10,7 +10,7 @@
       <canvas id="wasmcut-canvas"></canvas>
       <div id="bridge-status" aria-live="polite">Loading C++ module...</div>
       <img id="bridge-thumbnail" alt="FFmpeg probe thumbnail" />
-      <input id="file-input" type="file" accept="video/*,audio/*" hidden />
+      <input id="file-input" type="file" accept="video/*,audio/*" aria-label="Import media" />
       <video id="bridge-video" playsinline preload="auto"></video>
     </main>
     <script type="module" src="./main.ts"></script>

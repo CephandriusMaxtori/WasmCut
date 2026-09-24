@@ -38,6 +38,19 @@ body,
   pointer-events: none;
 }
 
+#file-input {
+  position: fixed;
+  left: 6px;
+  top: 29px;
+  z-index: 3;
+  width: 115px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
 #bridge-video {
   position: fixed;
   left: 0;
