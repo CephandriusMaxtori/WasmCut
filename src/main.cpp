@@ -13,6 +13,8 @@
 #include <SDL_opengl.h>
 #endif
 
+#include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <string>
 
@@ -30,6 +32,8 @@ struct AppState {
   std::string file_name;
   double file_size = 0.0;
   double duration = 0.0;
+  std::string clip_id;
+  wasmcut::model::TimeUs playhead_us = 0;
   std::string status = "No media loaded";
   float progress = 0.0f;
 };
@@ -42,6 +46,45 @@ SDL_GLContext gl_context = nullptr;
 bool running = true;
 int viewport_width = 1280;
 int viewport_height = 720;
+
+int clip_counter = 0;
+
+void add_media_to_timeline() {
+  if (!state.has_media || state.media_id.empty()) {
+    state.status = "Import media before adding a clip";
+    return;
+  }
+
+  wasmcut::model::MediaAsset* asset = project.find_media(state.media_id);
+  if (asset == nullptr || asset->duration <= 0) {
+    state.status = "Media duration is unavailable";
+    return;
+  }
+
+  if (!state.clip_id.empty() && project.find_clip(state.clip_id) != nullptr) {
+    state.status = "Clip is already on the timeline";
+    return;
+  }
+
+  wasmcut::model::Clip clip;
+  clip.id = "clip-" + std::to_string(++clip_counter);
+  clip.media_id = asset->id;
+  clip.name = asset->name;
+  clip.timeline_start = 0;
+  if (!clip.set_source_range(0, asset->duration)) {
+    state.status = "Unable to create clip range";
+    return;
+  }
+
+  if (project.create_clip(clip, "track-video") == nullptr) {
+    state.status = "Unable to add clip to Video 1";
+    return;
+  }
+
+  state.clip_id = clip.id;
+  state.playhead_us = 0;
+  state.status = "Clip added to Video 1";
+}
 
 void draw_media_bin() {
   const float height = ImGui::GetIO().DisplaySize.y;
@@ -61,6 +104,12 @@ void draw_media_bin() {
     ImGui::TextWrapped("File: %s", state.file_name.c_str());
     ImGui::Text("Size: %.2f MB", state.file_size / (1024.0 * 1024.0));
     ImGui::Text("Duration: %.2f s", state.duration);
+  }
+
+  if (state.has_media && state.clip_id.empty() && ImGui::Button("Add to timeline")) {
+    add_media_to_timeline();
+  } else if (!state.clip_id.empty()) {
+    ImGui::Text("Timeline clip: %s", state.clip_id.c_str());
   }
 
   ImGui::Text("Assets: %zu", project.media_assets.size());
@@ -92,8 +141,15 @@ void draw_preview() {
   ImGui::SetNextWindowSize(ImVec2(width > 660.0f ? width - 660.0f : 360.0f, height < 440.0f ? height : 440.0f), ImGuiCond_Always);
   ImGui::Begin("Preview");
 
-  ImGui::TextWrapped("Preview surface");
-  ImGui::TextWrapped("The single-clip preview will be connected after the bridge spike.");
+  if (state.clip_id.empty()) {
+    ImGui::TextWrapped("No clip selected.");
+  } else if (const wasmcut::model::Clip* clip = project.find_clip(state.clip_id); clip != nullptr) {
+    ImGui::TextWrapped("Clip: %s", clip->name.c_str());
+    ImGui::Text("Duration: %.2f s", wasmcut::model::time_to_seconds(clip->timeline_duration()));
+    ImGui::TextWrapped("Video preview will be connected after timeline playback is added.");
+  } else {
+    ImGui::TextWrapped("The selected clip is no longer available.");
+  }
 
   ImGui::End();
 }
@@ -105,11 +161,113 @@ void draw_timeline() {
   ImGui::SetNextWindowSize(ImVec2(width > 300.0f ? width - 300.0f : 300.0f, height > 440.0f ? height - 440.0f : 180.0f), ImGuiCond_Always);
   ImGui::Begin("Timeline");
 
-  ImGui::TextWrapped("Tracks: %zu", project.tracks.size());
-  for (const wasmcut::model::Track& track : project.tracks) {
-    ImGui::Text("%s (%s, %zu clips)", track.name.c_str(), wasmcut::model::track_type_name(track.type), track.clips.size());
+  ImGui::Text("Playhead: %.2f s", wasmcut::model::time_to_seconds(state.playhead_us));
+  ImGui::TextWrapped("Click a clip to select it.");
+
+  const ImVec2 available = ImGui::GetContentRegionAvail();
+  const float surface_width = available.x > 100.0f ? available.x : 100.0f;
+  const float surface_height = available.y > 80.0f ? available.y - 8.0f : 120.0f;
+  ImGui::InvisibleButton("timeline_surface", ImVec2(surface_width, surface_height));
+  const ImVec2 surface_min = ImGui::GetItemRectMin();
+  const ImVec2 surface_max = ImGui::GetItemRectMax();
+  ImDrawList* draw_list = ImGui::GetWindowDrawList();
+  const ImU32 surface_color = IM_COL32(20, 23, 30, 255);
+  const ImU32 ruler_color = IM_COL32(45, 51, 63, 255);
+  const ImU32 track_color = IM_COL32(27, 31, 39, 255);
+  const ImU32 clip_color = IM_COL32(46, 92, 150, 255);
+  const ImU32 selected_clip_color = IM_COL32(64, 132, 196, 255);
+  const ImU32 text_color = IM_COL32(220, 226, 235, 255);
+  const float label_width = 110.0f;
+  const float pixels_per_second = 80.0f;
+  const float ruler_height = 24.0f;
+  const float lane_height = 42.0f;
+
+  draw_list->AddRectFilled(surface_min, surface_max, surface_color);
+  draw_list->AddRectFilled(
+      ImVec2(surface_min.x, surface_min.y),
+      ImVec2(surface_max.x, surface_min.y + ruler_height),
+      ruler_color);
+
+  const double project_duration_seconds = wasmcut::model::time_to_seconds(project.duration());
+  int max_seconds = project_duration_seconds >= 595.0 ? 600 : static_cast<int>(project_duration_seconds) + 5;
+  if (max_seconds < 5) {
+    max_seconds = 5;
   }
-  ImGui::TextWrapped("Timeline model and clip interactions are next.");
+
+  for (int second = 0; second <= max_seconds; ++second) {
+    const float x = surface_min.x + label_width + static_cast<float>(second) * pixels_per_second;
+    if (x > surface_max.x) {
+      break;
+    }
+    draw_list->AddLine(
+        ImVec2(x, surface_min.y + ruler_height),
+        ImVec2(x, surface_max.y),
+        IM_COL32(55, 61, 73, 255));
+    const std::string label = std::to_string(second) + "s";
+    draw_list->AddText(ImVec2(x + 3.0f, surface_min.y + 4.0f), text_color, label.c_str());
+  }
+
+  for (std::size_t track_index = 0; track_index < project.tracks.size(); ++track_index) {
+    const wasmcut::model::Track& track = project.tracks[track_index];
+    const float lane_top = surface_min.y + ruler_height + static_cast<float>(track_index) * lane_height;
+    const float lane_bottom = lane_top + lane_height;
+    draw_list->AddRectFilled(
+        ImVec2(surface_min.x, lane_top),
+        ImVec2(surface_max.x, lane_bottom),
+        track_color);
+    draw_list->AddText(ImVec2(surface_min.x + 6.0f, lane_top + 13.0f), text_color, track.name.c_str());
+
+    for (const wasmcut::model::Clip& clip : track.clips) {
+      const double start_seconds = wasmcut::model::time_to_seconds(clip.timeline_start);
+      const double duration_seconds = wasmcut::model::time_to_seconds(clip.timeline_duration());
+      const float clip_x = surface_min.x + label_width + static_cast<float>(start_seconds) * pixels_per_second;
+      const float clip_width = duration_seconds * pixels_per_second;
+      if (clip_x > surface_max.x) {
+        continue;
+      }
+      float visible_width = clip_width < 8.0f ? 8.0f : clip_width;
+      if (clip_x + visible_width > surface_max.x) {
+        visible_width = surface_max.x - clip_x;
+      }
+      const ImU32 color = state.clip_id == clip.id ? selected_clip_color : clip_color;
+      draw_list->AddRectFilled(
+          ImVec2(clip_x, lane_top + 4.0f),
+          ImVec2(clip_x + visible_width, lane_bottom - 4.0f),
+          color);
+      if (visible_width > 40.0f) {
+        draw_list->AddText(ImVec2(clip_x + 5.0f, lane_top + 13.0f), text_color, clip.name.c_str());
+      }
+    }
+  }
+
+  if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsMouseHoveringRect(surface_min, surface_max, true)) {
+    const float mouse_x = ImGui::GetIO().MousePos.x;
+    const float mouse_y = ImGui::GetIO().MousePos.y;
+    if (mouse_x >= surface_min.x + label_width) {
+      const double clicked_seconds = static_cast<double>(mouse_x - surface_min.x - label_width) / pixels_per_second;
+      state.playhead_us = wasmcut::model::seconds_to_time(clicked_seconds);
+      state.clip_id.clear();
+      for (std::size_t track_index = 0; track_index < project.tracks.size(); ++track_index) {
+        const wasmcut::model::Track& track = project.tracks[track_index];
+        const float lane_top = surface_min.y + ruler_height + static_cast<float>(track_index) * lane_height;
+        if (mouse_y >= lane_top && mouse_y <= lane_top + lane_height) {
+          if (const wasmcut::model::Clip* clip = track.clip_at(state.playhead_us); clip != nullptr) {
+            state.clip_id = clip->id;
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  const float playhead_x = surface_min.x + label_width + static_cast<float>(wasmcut::model::time_to_seconds(state.playhead_us)) * pixels_per_second;
+  if (playhead_x >= surface_min.x + label_width && playhead_x <= surface_max.x) {
+    draw_list->AddLine(
+        ImVec2(playhead_x, surface_min.y),
+        ImVec2(playhead_x, surface_max.y),
+        IM_COL32(235, 93, 93, 255),
+        2.0f);
+  }
 
   ImGui::End();
 }
@@ -174,10 +332,11 @@ void wasmcut_set_media_info(const char* name, double size, double duration) {
   state.file_name = name != nullptr ? name : "";
   state.file_size = size;
   state.duration = duration;
-  if (state.media_id.empty()) {
-    ++media_counter;
-    state.media_id = "media-" + std::to_string(media_counter);
-  }
+  ++media_counter;
+  state.media_id = "media-" + std::to_string(media_counter);
+  state.clip_id.clear();
+  state.playhead_us = 0;
+  state.progress = 0.0f;
   wasmcut::model::MediaAsset asset;
   asset.id = state.media_id;
   asset.name = state.file_name;
