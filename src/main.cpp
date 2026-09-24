@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #ifdef __EMSCRIPTEN__
 #define WASMCUT_KEEPALIVE EMSCRIPTEN_KEEPALIVE
@@ -47,6 +48,90 @@ bool running = true;
 int viewport_width = 1280;
 int viewport_height = 720;
 
+struct EditorSnapshot {
+  wasmcut::model::Project project;
+  std::string media_id;
+  std::string file_name;
+  double file_size = 0.0;
+  double duration = 0.0;
+  std::string clip_id;
+  wasmcut::model::TimeUs playhead_us = 0;
+};
+
+std::vector<EditorSnapshot> undo_history;
+std::vector<EditorSnapshot> redo_history;
+
+EditorSnapshot capture_snapshot() {
+  return {
+      project,
+      state.media_id,
+      state.file_name,
+      state.file_size,
+      state.duration,
+      state.clip_id,
+      state.playhead_us};
+}
+
+void restore_snapshot(const EditorSnapshot& snapshot) {
+  project = snapshot.project;
+  state.media_id = snapshot.media_id;
+  state.file_name = snapshot.file_name;
+  state.file_size = snapshot.file_size;
+  state.duration = snapshot.duration;
+  state.clip_id = snapshot.clip_id;
+  state.playhead_us = snapshot.playhead_us;
+  state.progress = 0.0f;
+
+  const wasmcut::model::MediaAsset* asset = project.find_media(state.media_id);
+  state.has_media = asset != nullptr;
+  if (asset != nullptr) {
+    state.file_name = asset->file_name;
+    state.file_size = static_cast<double>(asset->file_size);
+    state.duration = wasmcut::model::time_to_seconds(asset->duration);
+  } else {
+    state.media_id.clear();
+    state.file_name.clear();
+    state.file_size = 0.0;
+    state.duration = 0.0;
+  }
+
+  if (project.find_clip(state.clip_id) == nullptr) {
+    state.clip_id.clear();
+  }
+}
+
+void record_history() {
+  undo_history.push_back(capture_snapshot());
+  if (undo_history.size() > 100) {
+    undo_history.erase(undo_history.begin());
+  }
+  redo_history.clear();
+}
+
+void undo_project() {
+  if (undo_history.empty()) {
+    state.status = "Nothing to undo";
+    return;
+  }
+  redo_history.push_back(capture_snapshot());
+  const EditorSnapshot snapshot = undo_history.back();
+  undo_history.pop_back();
+  restore_snapshot(snapshot);
+  state.status = "Undo";
+}
+
+void redo_project() {
+  if (redo_history.empty()) {
+    state.status = "Nothing to redo";
+    return;
+  }
+  undo_history.push_back(capture_snapshot());
+  const EditorSnapshot snapshot = redo_history.back();
+  redo_history.pop_back();
+  restore_snapshot(snapshot);
+  state.status = "Redo";
+}
+
 int clip_counter = 0;
 
 void add_media_to_timeline() {
@@ -76,7 +161,11 @@ void add_media_to_timeline() {
     return;
   }
 
+  const EditorSnapshot before = capture_snapshot();
+  record_history();
   if (project.create_clip(clip, "track-video") == nullptr) {
+    restore_snapshot(before);
+    undo_history.pop_back();
     state.status = "Unable to add clip to Video 1";
     return;
   }
@@ -84,6 +173,138 @@ void add_media_to_timeline() {
   state.clip_id = clip.id;
   state.playhead_us = 0;
   state.status = "Clip added to Video 1";
+}
+
+wasmcut::model::Track* find_track_for_clip(const std::string& clip_id) {
+  for (wasmcut::model::Track& track : project.tracks) {
+    if (track.find_clip(clip_id) != nullptr) {
+      return &track;
+    }
+  }
+  return nullptr;
+}
+
+void split_selected_clip() {
+  wasmcut::model::Clip* selected = project.find_clip(state.clip_id);
+  wasmcut::model::Track* track = find_track_for_clip(state.clip_id);
+  if (selected == nullptr || track == nullptr) {
+    state.status = "Select a clip to split";
+    return;
+  }
+  if (!selected->contains_time(state.playhead_us) || state.playhead_us <= selected->timeline_start ||
+      state.playhead_us >= selected->timeline_end()) {
+    state.status = "Place the playhead inside the selected clip";
+    return;
+  }
+
+  const wasmcut::model::Clip original = *selected;
+  const wasmcut::model::TimeUs source_split = selected->source_time_at(state.playhead_us);
+  if (source_split <= original.source_in || source_split >= original.source_out) {
+    state.status = "Unable to split at the playhead";
+    return;
+  }
+
+  const std::string left_id = original.id + "-a";
+  const std::string right_id = original.id + "-b";
+  if (project.find_clip(left_id) != nullptr || project.find_clip(right_id) != nullptr) {
+    state.status = "Split clip IDs already exist";
+    return;
+  }
+
+  const EditorSnapshot before = capture_snapshot();
+  record_history();
+  project.remove_clip(original.id);
+
+  wasmcut::model::Clip left = original;
+  left.id = left_id;
+  left.source_out = source_split;
+  wasmcut::model::Clip right = original;
+  right.id = right_id;
+  right.timeline_start = state.playhead_us;
+  right.source_in = source_split;
+
+  if (project.create_clip(left, track->id) == nullptr || project.create_clip(right, track->id) == nullptr) {
+    restore_snapshot(before);
+    undo_history.pop_back();
+    state.status = "Unable to split clip";
+    return;
+  }
+
+  state.clip_id = right.id;
+  state.status = "Clip split at playhead";
+}
+
+void delete_selected_clip() {
+  if (state.clip_id.empty() || project.find_clip(state.clip_id) == nullptr) {
+    state.status = "Select a clip to delete";
+    return;
+  }
+  record_history();
+  project.remove_clip(state.clip_id);
+  state.clip_id.clear();
+  state.status = "Clip deleted";
+}
+
+void trim_selected_left() {
+  wasmcut::model::Clip* clip = project.find_clip(state.clip_id);
+  if (clip == nullptr || !clip->contains_time(state.playhead_us) || state.playhead_us <= clip->timeline_start ||
+      state.playhead_us >= clip->timeline_end()) {
+    state.status = "Place the playhead inside the selected clip";
+    return;
+  }
+  const wasmcut::model::TimeUs source_split = clip->source_time_at(state.playhead_us);
+  if (source_split <= clip->source_in || source_split >= clip->source_out) {
+    state.status = "Unable to trim clip";
+    return;
+  }
+  record_history();
+  const wasmcut::model::TimeUs source_out = clip->source_out;
+  clip->set_source_range(source_split, source_out);
+  clip->set_timeline_start(state.playhead_us);
+  project.recalculate_duration();
+  state.status = "Trimmed clip left edge";
+}
+
+void trim_selected_right() {
+  wasmcut::model::Clip* clip = project.find_clip(state.clip_id);
+  if (clip == nullptr || !clip->contains_time(state.playhead_us) || state.playhead_us <= clip->timeline_start ||
+      state.playhead_us >= clip->timeline_end()) {
+    state.status = "Place the playhead inside the selected clip";
+    return;
+  }
+  const wasmcut::model::TimeUs source_split = clip->source_time_at(state.playhead_us);
+  if (source_split <= clip->source_in || source_split >= clip->source_out) {
+    state.status = "Unable to trim clip";
+    return;
+  }
+  record_history();
+  const wasmcut::model::TimeUs source_in = clip->source_in;
+  clip->set_source_range(source_in, source_split);
+  project.recalculate_duration();
+  state.status = "Trimmed clip right edge";
+}
+
+void handle_shortcuts() {
+  const ImGuiIO& io = ImGui::GetIO();
+  if (io.WantTextInput) {
+    return;
+  }
+  const bool command = io.KeyCtrl || io.KeySuper;
+  if (command && ImGui::IsKeyPressed(ImGuiKey_Z)) {
+    if (io.KeyShift) {
+      redo_project();
+    } else {
+      undo_project();
+    }
+  } else if (command && ImGui::IsKeyPressed(ImGuiKey_Y)) {
+    redo_project();
+  }
+  if (ImGui::IsKeyPressed(ImGuiKey_S)) {
+    split_selected_clip();
+  }
+  if (ImGui::IsKeyPressed(ImGuiKey_Delete)) {
+    delete_selected_clip();
+  }
 }
 
 void draw_media_bin() {
@@ -163,6 +384,32 @@ void draw_timeline() {
 
   ImGui::Text("Playhead: %.2f s", wasmcut::model::time_to_seconds(state.playhead_us));
   ImGui::TextWrapped("Click a clip to select it.");
+
+  if (ImGui::Button("Undo")) {
+    undo_project();
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Redo")) {
+    redo_project();
+  }
+  if (!state.clip_id.empty()) {
+    ImGui::SameLine();
+    if (ImGui::Button("Split at playhead")) {
+      split_selected_clip();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Trim left")) {
+      trim_selected_left();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Trim right")) {
+      trim_selected_right();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Delete")) {
+      delete_selected_clip();
+    }
+  }
 
   const ImVec2 available = ImGui::GetContentRegionAvail();
   const float surface_width = available.x > 100.0f ? available.x : 100.0f;
@@ -304,6 +551,7 @@ void main_loop() {
   ImGui::NewFrame();
 
   draw_ui();
+  handle_shortcuts();
 
   ImGui::Render();
 
@@ -343,6 +591,7 @@ void wasmcut_set_media_info(const char* name, double size, double duration) {
   asset.file_name = state.file_name;
   asset.file_size = size > 0.0 ? static_cast<std::uint64_t>(size) : 0;
   asset.duration = wasmcut::model::seconds_to_time(duration);
+  record_history();
   project.upsert_media(asset);
   state.has_media = true;
   state.status = "Media loaded";
