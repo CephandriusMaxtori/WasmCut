@@ -1,5 +1,6 @@
 build/
 dist/
+emsdk-cache/
 node_modules/
 web/generated/*.js
 web/generated/*.wasm

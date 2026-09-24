@@ -3,7 +3,7 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["build/**", "dist/**", "node_modules/**", "web/generated/**", "web/public/**"]
+    ignores: ["build/**", "dist/**", "emsdk-cache/**", "node_modules/**", "web/generated/**", "web/public/**"]
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
