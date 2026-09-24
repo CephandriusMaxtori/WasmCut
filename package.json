@@ -1,0 +1,32 @@
+{
+  "name": "wasmcut",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "copy:ffmpeg": "node scripts/copy-ffmpeg.mjs",
+    "predev": "npm run copy:ffmpeg",
+    "dev": "vite --config web/vite.config.ts",
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "prebuild:web": "npm run copy:ffmpeg",
+    "build:web": "vite build --config web/vite.config.ts",
+    "build": "npm run build:wasm && npm run build:web",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test:model": "node build/model_tests.cjs",
+    "check": "npm run typecheck"
+  },
+  "dependencies": {
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.0.0",
+    "eslint": "^10.11.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.70.1",
+    "vite": "^6.0.0"
+  }
+}
