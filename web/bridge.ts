@@ -10,6 +10,7 @@ type WasmcutBridge = {
   requestImport: () => void;
   requestProbe: () => Promise<void>;
   requestExport: (sourceIn: number, sourceOut: number) => Promise<void>;
+  addMediaToTimeline: (timelineSeconds?: number) => void;
   playVideo: () => void;
   pauseVideo: () => void;
   seekVideo: (seconds: number) => void;
@@ -24,6 +25,8 @@ declare global {
 }
 
 const fileInput = document.querySelector<HTMLInputElement>("#file-input");
+const addTimelineButton = document.querySelector<HTMLButtonElement>("#add-timeline-button");
+const timelineDropTarget = document.querySelector<HTMLDivElement>("#timeline-drop-target");
 const bridgeStatus = document.querySelector<HTMLDivElement>("#bridge-status");
 const canvas = document.querySelector<HTMLCanvasElement>("#wasmcut-canvas");
 const bridgeVideo = document.querySelector<HTMLVideoElement>("#bridge-video");
@@ -34,6 +37,7 @@ let ffmpegLoad: Promise<FFmpeg> | null = null;
 let thumbnailUrl: string | null = null;
 let videoUrl: string | null = null;
 let mediaJobInProgress = false;
+let setAddMediaToTimeline: ((timelineSeconds?: number) => unknown) | null = null;
 let setStatus: ((value: string) => unknown) | null = null;
 let setMediaInfo: ((name: string, size: number, duration: number) => unknown) | null = null;
 let setProgress: ((value: number) => unknown) | null = null;
@@ -156,7 +160,7 @@ async function loadFFmpeg() {
   return ffmpegLoad;
 }
 
-async function onFileSelected(file: File) {
+async function onFileSelected(file: File, addToTimeline = false, timelineSeconds = -1) {
   activeFile = file;
   const duration = await readDuration(file);
   if (bridgeVideo !== null) {
@@ -169,6 +173,10 @@ async function onFileSelected(file: File) {
     bridgeVideo.currentTime = 0;
   }
   setMediaInfo?.(file.name, file.size, duration);
+  addTimelineButton?.classList.add("available");
+  if (addToTimeline) {
+    setAddMediaToTimeline?.(timelineSeconds);
+  }
   updateStatus("Media loaded. Ready for an FFmpeg probe.");
 }
 
@@ -307,11 +315,90 @@ async function requestExport(sourceIn: number, sourceOut: number) {
   }
 }
 
+function timelineSecondsAt(clientX: number, clientY: number) {
+  if (canvas === null) {
+    return -1;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+  const timelineTop = rect.height > 440 ? 440 : rect.height;
+  if (x < 300 || y < timelineTop || y > rect.height) {
+    return -1;
+  }
+  return Math.max(0, (x - 300 - 110) / 80);
+}
+
+function hasDraggedFiles(event: DragEvent) {
+  return event.dataTransfer?.types.includes("Files") ?? false;
+}
+
+function setTimelineDrag(active: boolean) {
+  timelineDropTarget?.classList.toggle("active", active);
+}
+
+function syncTimelineDropTarget() {
+  if (canvas === null || timelineDropTarget === null) {
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const timelineTop = rect.height > 440 ? 440 : rect.height;
+  timelineDropTarget.style.left = `${rect.left + 300}px`;
+  timelineDropTarget.style.top = `${rect.top + timelineTop}px`;
+  timelineDropTarget.style.width = `${Math.max(0, rect.width - 300)}px`;
+  timelineDropTarget.style.height = `${Math.max(0, rect.height - timelineTop)}px`;
+}
+
+function handleTimelineDragEnter(event: DragEvent) {
+  if (!hasDraggedFiles(event) || timelineSecondsAt(event.clientX, event.clientY) < 0) {
+    return;
+  }
+  event.preventDefault();
+  if (event.dataTransfer !== null) {
+    event.dataTransfer.dropEffect = "copy";
+  }
+  syncTimelineDropTarget();
+  setTimelineDrag(true);
+}
+
+function handleTimelineDragOver(event: DragEvent) {
+  if (!hasDraggedFiles(event) || timelineSecondsAt(event.clientX, event.clientY) < 0) {
+    return;
+  }
+  event.preventDefault();
+  if (event.dataTransfer !== null) {
+    event.dataTransfer.dropEffect = "copy";
+  }
+  syncTimelineDropTarget();
+  setTimelineDrag(true);
+}
+
+function handleTimelineDragLeave(event: DragEvent) {
+  if (event.relatedTarget !== null && timelineSecondsAt(event.clientX, event.clientY) >= 0) {
+    return;
+  }
+  setTimelineDrag(false);
+}
+
+async function handleTimelineDrop(event: DragEvent) {
+  const timelineSeconds = timelineSecondsAt(event.clientX, event.clientY);
+  if (!hasDraggedFiles(event) || timelineSeconds < 0) {
+    return;
+  }
+  event.preventDefault();
+  setTimelineDrag(false);
+  const file = event.dataTransfer?.files[0];
+  if (file !== undefined) {
+    await onFileSelected(file, true, timelineSeconds);
+  }
+}
+
 export function createBridge(): WasmcutBridge {
   const bridge: WasmcutBridge = {
     requestImport: () => fileInput?.click(),
     requestProbe,
     requestExport,
+    addMediaToTimeline: (timelineSeconds = -1) => setAddMediaToTimeline?.(timelineSeconds),
     playVideo,
     pauseVideo,
     seekVideo,
@@ -324,6 +411,9 @@ export function createBridge(): WasmcutBridge {
         duration: number
       ) => unknown;
       setProgress = module.cwrap("wasmcut_set_progress", null, ["number"]) as (value: number) => unknown;
+      setAddMediaToTimeline = module.cwrap("wasmcut_add_media_to_timeline", null, ["number"]) as (
+        timelineSeconds?: number
+      ) => unknown;
       setPlaybackTime = module.cwrap("wasmcut_set_playback_time", null, ["number"]) as (value: number) => unknown;
       setPlaybackState = module.cwrap("wasmcut_set_playback_state", null, ["number"]) as (value: number) => unknown;
     }
@@ -336,6 +426,15 @@ export function createBridge(): WasmcutBridge {
       void onFileSelected(file);
     }
   });
+  addTimelineButton?.addEventListener("click", () => {
+    setAddMediaToTimeline?.(-1);
+  });
+  window.addEventListener("dragenter", handleTimelineDragEnter);
+  window.addEventListener("dragover", handleTimelineDragOver);
+  window.addEventListener("dragleave", handleTimelineDragLeave);
+  window.addEventListener("drop", (event) => void handleTimelineDrop(event));
+  window.addEventListener("resize", syncTimelineDropTarget);
+  syncTimelineDropTarget();
   bridgeVideo?.addEventListener("loadedmetadata", reportVideoTime);
   bridgeVideo?.addEventListener("timeupdate", reportVideoTime);
   bridgeVideo?.addEventListener("seeked", reportVideoTime);

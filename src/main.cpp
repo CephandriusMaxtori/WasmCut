@@ -192,7 +192,7 @@ void add_media_to_timeline() {
   clip.id = "clip-" + std::to_string(++clip_counter);
   clip.media_id = asset->id;
   clip.name = asset->name;
-  clip.timeline_start = 0;
+  clip.timeline_start = state.playhead_us;
   if (!clip.set_source_range(0, asset->duration)) {
     state.status = "Unable to create clip range";
     return;
@@ -718,6 +718,16 @@ void wasmcut_set_media_info(const char* name, double size, double duration) {
   project.upsert_media(asset);
   state.has_media = true;
   state.status = "Media loaded";
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+void wasmcut_add_media_to_timeline(double timeline_seconds) {
+  if (timeline_seconds >= 0.0) {
+    state.playhead_us = wasmcut::model::seconds_to_time(timeline_seconds);
+  }
+  add_media_to_timeline();
 }
 
 #ifdef __EMSCRIPTEN__

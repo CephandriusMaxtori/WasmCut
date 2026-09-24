@@ -38,6 +38,38 @@ body,
   pointer-events: none;
 }
 
+#add-timeline-button {
+  position: fixed;
+  left: 6px;
+  top: 108px;
+  z-index: 3;
+  display: none;
+  width: 115px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+#add-timeline-button.available {
+  display: block;
+}
+
+#timeline-drop-target {
+  position: fixed;
+  z-index: 1;
+  display: none;
+  border: 2px dashed transparent;
+  pointer-events: none;
+}
+
+#timeline-drop-target.active {
+  display: block;
+  border-color: #5aa7e8;
+  background: rgba(50, 116, 173, 0.18);
+}
+
 #file-input {
   position: fixed;
   left: 6px;
