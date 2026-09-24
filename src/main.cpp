@@ -35,6 +35,7 @@ struct AppState {
   double duration = 0.0;
   std::string clip_id;
   wasmcut::model::TimeUs playhead_us = 0;
+  bool is_playing = false;
   std::string status = "No media loaded";
   float progress = 0.0f;
 };
@@ -47,6 +48,40 @@ SDL_GLContext gl_context = nullptr;
 bool running = true;
 int viewport_width = 1280;
 int viewport_height = 720;
+GLuint preview_texture = 0;
+bool preview_texture_initialized = false;
+
+bool ensure_preview_texture() {
+  if (preview_texture_initialized) {
+    return preview_texture != 0;
+  }
+  glGenTextures(1, &preview_texture);
+  if (preview_texture == 0) {
+    return false;
+  }
+  glBindTexture(GL_TEXTURE_2D, preview_texture);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  preview_texture_initialized = true;
+  return true;
+}
+
+wasmcut::model::TimeUs timeline_time_for_source(
+    const wasmcut::model::Clip& clip,
+    wasmcut::model::TimeUs source_time) {
+  if (source_time <= clip.source_in) {
+    return clip.timeline_start;
+  }
+  if (source_time >= clip.source_out) {
+    return clip.timeline_end();
+  }
+  const long double elapsed = static_cast<long double>(source_time - clip.source_in) / static_cast<long double>(clip.speed);
+  const wasmcut::model::TimeUs elapsed_time = wasmcut::model::seconds_to_time(static_cast<double>(elapsed));
+  return wasmcut::model::add_time_saturated(clip.timeline_start, elapsed_time);
+}
 
 struct EditorSnapshot {
   wasmcut::model::Project project;
@@ -80,6 +115,8 @@ void restore_snapshot(const EditorSnapshot& snapshot) {
   state.duration = snapshot.duration;
   state.clip_id = snapshot.clip_id;
   state.playhead_us = snapshot.playhead_us;
+  state.is_playing = false;
+  wasmcut::platform::pause_video();
   state.progress = 0.0f;
 
   const wasmcut::model::MediaAsset* asset = project.find_media(state.media_id);
@@ -172,6 +209,9 @@ void add_media_to_timeline() {
 
   state.clip_id = clip.id;
   state.playhead_us = 0;
+  state.is_playing = false;
+  wasmcut::platform::pause_video();
+  wasmcut::platform::seek_video(0.0);
   state.status = "Clip added to Video 1";
 }
 
@@ -231,6 +271,9 @@ void split_selected_clip() {
   }
 
   state.clip_id = right.id;
+  state.is_playing = false;
+  wasmcut::platform::pause_video();
+  wasmcut::platform::seek_video(wasmcut::model::time_to_seconds(source_split));
   state.status = "Clip split at playhead";
 }
 
@@ -242,6 +285,8 @@ void delete_selected_clip() {
   record_history();
   project.remove_clip(state.clip_id);
   state.clip_id.clear();
+  state.is_playing = false;
+  wasmcut::platform::pause_video();
   state.status = "Clip deleted";
 }
 
@@ -262,6 +307,9 @@ void trim_selected_left() {
   clip->set_source_range(source_split, source_out);
   clip->set_timeline_start(state.playhead_us);
   project.recalculate_duration();
+  state.is_playing = false;
+  wasmcut::platform::pause_video();
+  wasmcut::platform::seek_video(wasmcut::model::time_to_seconds(source_split));
   state.status = "Trimmed clip left edge";
 }
 
@@ -281,7 +329,27 @@ void trim_selected_right() {
   const wasmcut::model::TimeUs source_in = clip->source_in;
   clip->set_source_range(source_in, source_split);
   project.recalculate_duration();
+  state.is_playing = false;
+  wasmcut::platform::pause_video();
+  wasmcut::platform::seek_video(wasmcut::model::time_to_seconds(clip->source_in));
   state.status = "Trimmed clip right edge";
+}
+
+void pause_preview() {
+  wasmcut::platform::pause_video();
+  state.is_playing = false;
+}
+
+void seek_selected_preview() {
+  const wasmcut::model::Clip* clip = project.find_clip(state.clip_id);
+  if (clip == nullptr) {
+    return;
+  }
+  wasmcut::model::TimeUs source_time = clip->source_time_at(state.playhead_us);
+  if (source_time == 0 && state.playhead_us < clip->timeline_start) {
+    source_time = clip->source_in;
+  }
+  wasmcut::platform::seek_video(wasmcut::model::time_to_seconds(source_time));
 }
 
 void handle_shortcuts() {
@@ -367,7 +435,54 @@ void draw_preview() {
   } else if (const wasmcut::model::Clip* clip = project.find_clip(state.clip_id); clip != nullptr) {
     ImGui::TextWrapped("Clip: %s", clip->name.c_str());
     ImGui::Text("Duration: %.2f s", wasmcut::model::time_to_seconds(clip->timeline_duration()));
-    ImGui::TextWrapped("Video preview will be connected after timeline playback is added.");
+
+    const ImVec2 available = ImGui::GetContentRegionAvail();
+    const float image_height = available.y > 80.0f ? available.y - 70.0f : 100.0f;
+    bool frame_uploaded = false;
+    if (ensure_preview_texture()) {
+      glBindTexture(GL_TEXTURE_2D, preview_texture);
+      frame_uploaded = wasmcut::platform::upload_video_frame();
+      glBindTexture(GL_TEXTURE_2D, 0);
+    }
+    if (frame_uploaded) {
+      ImGui::Image(
+          ImTextureRef(preview_texture),
+          ImVec2(available.x, image_height),
+          ImVec2(0.0f, 1.0f),
+          ImVec2(1.0f, 0.0f));
+    } else {
+      ImGui::TextWrapped("Video frame unavailable until the media is ready.");
+      ImGui::Dummy(ImVec2(available.x, image_height));
+    }
+
+    if (ImGui::Button(state.is_playing ? "Pause" : "Play")) {
+      if (state.is_playing) {
+        pause_preview();
+      } else {
+        if (state.playhead_us >= clip->timeline_end()) {
+          state.playhead_us = clip->timeline_start;
+          seek_selected_preview();
+        }
+        wasmcut::platform::play_video();
+        state.is_playing = true;
+      }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Go to start")) {
+      state.playhead_us = clip->timeline_start;
+      seek_selected_preview();
+    }
+
+    float preview_seconds = wasmcut::model::time_to_seconds(state.playhead_us);
+    const float start_seconds = wasmcut::model::time_to_seconds(clip->timeline_start);
+    float end_seconds = wasmcut::model::time_to_seconds(clip->timeline_end());
+    if (end_seconds <= start_seconds) {
+      end_seconds = start_seconds + 0.01f;
+    }
+    if (ImGui::SliderFloat("Position", &preview_seconds, start_seconds, end_seconds)) {
+      state.playhead_us = wasmcut::model::seconds_to_time(preview_seconds);
+      seek_selected_preview();
+    }
   } else {
     ImGui::TextWrapped("The selected clip is no longer available.");
   }
@@ -584,7 +699,9 @@ void wasmcut_set_media_info(const char* name, double size, double duration) {
   state.media_id = "media-" + std::to_string(media_counter);
   state.clip_id.clear();
   state.playhead_us = 0;
+  state.is_playing = false;
   state.progress = 0.0f;
+  wasmcut::platform::pause_video();
   wasmcut::model::MediaAsset asset;
   asset.id = state.media_id;
   asset.name = state.file_name;
@@ -595,6 +712,22 @@ void wasmcut_set_media_info(const char* name, double size, double duration) {
   project.upsert_media(asset);
   state.has_media = true;
   state.status = "Media loaded";
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+void wasmcut_set_playback_time(double source_seconds) {
+  const wasmcut::model::TimeUs source_time = wasmcut::model::seconds_to_time(source_seconds);
+  const wasmcut::model::Clip* clip = project.find_clip(state.clip_id);
+  state.playhead_us = clip == nullptr ? source_time : timeline_time_for_source(*clip, source_time);
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+void wasmcut_set_playback_state(int playing) {
+  state.is_playing = playing != 0;
 }
 
 #ifdef __EMSCRIPTEN__

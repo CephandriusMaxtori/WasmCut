@@ -96,7 +96,7 @@ if(EMSCRIPTEN)
     "-sEXPORT_ES6=1"
     "-sEXPORT_NAME=createWasmcutModule"
     "-sEXPORTED_RUNTIME_METHODS=cwrap"
-    "-sEXPORTED_FUNCTIONS=_main,_wasmcut_set_status,_wasmcut_set_media_info,_wasmcut_set_progress,_wasmcut_set_viewport_size"
+    "-sEXPORTED_FUNCTIONS=_main,_wasmcut_set_status,_wasmcut_set_media_info,_wasmcut_set_playback_time,_wasmcut_set_playback_state,_wasmcut_set_progress,_wasmcut_set_viewport_size"
     "-sENVIRONMENT=web"
     "-sEXIT_RUNTIME=0"
   )

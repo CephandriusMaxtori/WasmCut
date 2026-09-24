@@ -9,6 +9,10 @@ type WasmcutModule = {
 type WasmcutBridge = {
   requestImport: () => void;
   requestProbe: () => Promise<void>;
+  playVideo: () => void;
+  pauseVideo: () => void;
+  seekVideo: (seconds: number) => void;
+  uploadVideoFrame: () => boolean;
   attach: (module: WasmcutModule) => void;
 };
 
@@ -20,15 +24,19 @@ declare global {
 
 const fileInput = document.querySelector<HTMLInputElement>("#file-input");
 const bridgeStatus = document.querySelector<HTMLDivElement>("#bridge-status");
+const canvas = document.querySelector<HTMLCanvasElement>("#wasmcut-canvas");
 const bridgeVideo = document.querySelector<HTMLVideoElement>("#bridge-video");
 const bridgeThumbnail = document.querySelector<HTMLImageElement>("#bridge-thumbnail");
 
 let activeFile: File | null = null;
 let ffmpegLoad: Promise<FFmpeg> | null = null;
 let thumbnailUrl: string | null = null;
+let videoUrl: string | null = null;
 let setStatus: ((value: string) => unknown) | null = null;
 let setMediaInfo: ((name: string, size: number, duration: number) => unknown) | null = null;
 let setProgress: ((value: number) => unknown) | null = null;
+let setPlaybackTime: ((value: number) => unknown) | null = null;
+let setPlaybackState: ((value: number) => unknown) | null = null;
 
 function updateStatus(value: string) {
   if (bridgeStatus !== null) {
@@ -39,6 +47,62 @@ function updateStatus(value: string) {
 
 function assetUrl(path: string) {
   return new URL(path, new URL(import.meta.env.BASE_URL, window.location.href)).href;
+}
+
+function reportVideoTime() {
+  if (bridgeVideo !== null) {
+    setPlaybackTime?.(bridgeVideo.currentTime);
+  }
+}
+
+function reportVideoState() {
+  if (bridgeVideo !== null) {
+    setPlaybackState?.(bridgeVideo.paused ? 0 : 1);
+  }
+}
+
+function playVideo() {
+  if (bridgeVideo === null) {
+    updateStatus("Import media before playback");
+    return;
+  }
+  void bridgeVideo.play().then(reportVideoState).catch((error: unknown) => {
+    setPlaybackState?.(0);
+    const message = error instanceof Error ? error.message : String(error);
+    updateStatus(`Playback failed: ${message}`);
+  });
+}
+
+function pauseVideo() {
+  bridgeVideo?.pause();
+  reportVideoState();
+}
+
+function seekVideo(seconds: number) {
+  if (bridgeVideo === null) {
+    return;
+  }
+  const maximum = Number.isFinite(bridgeVideo.duration) ? bridgeVideo.duration : seconds;
+  const clamped = Math.max(0, Math.min(seconds, maximum));
+  bridgeVideo.currentTime = clamped;
+  setPlaybackTime?.(clamped);
+}
+
+function uploadVideoFrame() {
+  const gl = canvas?.getContext("webgl2");
+  if (gl === null || gl === undefined || bridgeVideo === null || bridgeVideo.readyState < 2 || bridgeVideo.videoWidth === 0) {
+    return false;
+  }
+  const texture = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
+  if (texture === null) {
+    return false;
+  }
+  try {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bridgeVideo);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function readDuration(file: File) {
@@ -94,8 +158,13 @@ async function onFileSelected(file: File) {
   activeFile = file;
   const duration = await readDuration(file);
   if (bridgeVideo !== null) {
-    bridgeVideo.src = URL.createObjectURL(file);
+    if (videoUrl !== null) {
+      URL.revokeObjectURL(videoUrl);
+    }
+    videoUrl = URL.createObjectURL(file);
+    bridgeVideo.src = videoUrl;
     bridgeVideo.load();
+    bridgeVideo.currentTime = 0;
   }
   setMediaInfo?.(file.name, file.size, duration);
   updateStatus("Media loaded. Ready for an FFmpeg probe.");
@@ -155,6 +224,10 @@ export function createBridge(): WasmcutBridge {
   const bridge: WasmcutBridge = {
     requestImport: () => fileInput?.click(),
     requestProbe,
+    playVideo,
+    pauseVideo,
+    seekVideo,
+    uploadVideoFrame,
     attach: (module: WasmcutModule) => {
       setStatus = module.cwrap("wasmcut_set_status", null, ["string"]) as (value: string) => unknown;
       setMediaInfo = module.cwrap("wasmcut_set_media_info", null, ["string", "number", "number"]) as (
@@ -163,6 +236,8 @@ export function createBridge(): WasmcutBridge {
         duration: number
       ) => unknown;
       setProgress = module.cwrap("wasmcut_set_progress", null, ["number"]) as (value: number) => unknown;
+      setPlaybackTime = module.cwrap("wasmcut_set_playback_time", null, ["number"]) as (value: number) => unknown;
+      setPlaybackState = module.cwrap("wasmcut_set_playback_state", null, ["number"]) as (value: number) => unknown;
     }
   };
 
@@ -173,6 +248,12 @@ export function createBridge(): WasmcutBridge {
       void onFileSelected(file);
     }
   });
+  bridgeVideo?.addEventListener("loadedmetadata", reportVideoTime);
+  bridgeVideo?.addEventListener("timeupdate", reportVideoTime);
+  bridgeVideo?.addEventListener("seeked", reportVideoTime);
+  bridgeVideo?.addEventListener("play", reportVideoState);
+  bridgeVideo?.addEventListener("pause", reportVideoState);
+  bridgeVideo?.addEventListener("ended", reportVideoState);
 
   return bridge;
 }
