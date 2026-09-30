@@ -62,7 +62,10 @@ target_link_libraries(imgui_backends PUBLIC imgui ${WASMCUT_SDL2_TARGET})
 target_compile_features(imgui_backends PUBLIC cxx_std_20)
 
 add_library(wasmcut_model STATIC
+  src/model/json.cpp
+  src/model/media_asset.cpp
   src/model/project.cpp
+  src/model/project_json.cpp
   src/model/track.cpp
 )
 

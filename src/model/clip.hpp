@@ -16,6 +16,7 @@ struct Clip {
   TimeUs source_out = 0;
   double speed = 1.0;
   float opacity = 1.0f;
+  float volume = 1.0f;
 
   [[nodiscard]] TimeUs source_duration() const noexcept {
     if (source_out <= source_in) {
@@ -58,7 +59,8 @@ struct Clip {
 
   [[nodiscard]] bool is_valid() const noexcept {
     return !id.empty() && !media_id.empty() && timeline_start >= 0 && source_in >= 0 && source_out > source_in &&
-           std::isfinite(speed) && speed > 0.0 && std::isfinite(opacity) && opacity >= 0.0f && opacity <= 1.0f;
+           std::isfinite(speed) && speed > 0.0 && std::isfinite(opacity) && opacity >= 0.0f && opacity <= 1.0f &&
+           std::isfinite(volume) && volume >= 0.0f && volume <= 4.0f;
   }
 
   bool set_source_range(TimeUs new_source_in, TimeUs new_source_out) noexcept {
@@ -91,6 +93,36 @@ struct Clip {
       return;
     }
     opacity = new_opacity < 0.0f ? 0.0f : (new_opacity > 1.0f ? 1.0f : new_opacity);
+  }
+
+  bool set_volume(float new_volume) noexcept {
+    if (!std::isfinite(new_volume) || new_volume < 0.0f || new_volume > 4.0f) {
+      return false;
+    }
+    volume = new_volume;
+    return true;
+  }
+
+  // Keeps the visible duration identical while changing speed: the source range
+  // shrinks or grows so the clip still covers the same timeline span.
+  bool set_speed_preserving_duration(double new_speed) noexcept {
+    if (!std::isfinite(new_speed) || new_speed <= 0.0 || speed <= 0.0) {
+      return false;
+    }
+    if (new_speed == speed) {
+      return true;
+    }
+    const TimeUs new_duration = seconds_to_time(time_to_seconds(timeline_duration()));
+    const long double scaled = static_cast<long double>(new_duration) * static_cast<long double>(new_speed);
+    const TimeUs new_source_duration = scaled >= static_cast<long double>(max_time_us)
+                                            ? max_time_us
+                                            : static_cast<TimeUs>(scaled);
+    if (new_source_duration <= 0) {
+      return false;
+    }
+    speed = new_speed;
+    source_out = add_time_saturated(source_in, new_source_duration);
+    return true;
   }
 };
 

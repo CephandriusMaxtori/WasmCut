@@ -65,6 +65,10 @@ inline constexpr TimeUs max_time_us = std::numeric_limits<TimeUs>::max();
   return seconds_to_time(frame_seconds);
 }
 
+// Renders SMPTE-style HH:MM:SS:FF for the frame rates an editor realistically
+// uses, and HH:MM:SS.mmm for anything exotic.
+inline constexpr double timecode_frame_rate_threshold = 24.0;
+
 // Renders SMPTE-style HH:MM:SS:FF (or HH:MM:SS.mmm at low frame rates).
 [[nodiscard]] inline std::string format_timecode(TimeUs time, double frame_rate) {
   const TimeUs clamped = clamp_time(time);
@@ -91,7 +95,7 @@ inline constexpr TimeUs max_time_us = std::numeric_limits<TimeUs>::max();
   }
   result += std::to_string(seconds);
 
-  if (std::isfinite(frame_rate) && frame_rate >= 50.0) {
+  if (std::isfinite(frame_rate) && frame_rate >= timecode_frame_rate_threshold) {
     const double frames = seconds_total * frame_rate;
     auto whole_frames = static_cast<long long>(frames) - total_seconds * static_cast<long long>(frame_rate);
     if (whole_frames < 0) {
@@ -135,7 +139,12 @@ inline constexpr TimeUs max_time_us = std::numeric_limits<TimeUs>::max();
   if (unit == 0) {
     result = std::to_string(static_cast<long long>(value));
   } else {
-    result = std::to_string(static_cast<int>(value * 10.0) / 10.0);
+    // One decimal place, assembled by hand so the output never picks up the
+    // six-decimal default of std::to_string(double).
+    const auto tenths = static_cast<long long>(value * 10.0);
+    result = std::to_string(tenths / 10);
+    result += '.';
+    result += static_cast<char>('0' + static_cast<int>(tenths % 10));
   }
   result += ' ';
   result += units[unit];

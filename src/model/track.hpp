@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -15,6 +16,7 @@ enum class TrackType {
 };
 
 [[nodiscard]] const char* track_type_name(TrackType type) noexcept;
+[[nodiscard]] TrackType parse_track_type(std::string_view value) noexcept;
 
 struct Track {
   std::string id;
@@ -28,6 +30,10 @@ struct Track {
 
   [[nodiscard]] bool is_valid() const noexcept {
     return !id.empty();
+  }
+
+  [[nodiscard]] bool is_audio() const noexcept {
+    return type == TrackType::Audio;
   }
 
   [[nodiscard]] Clip* find_clip(const std::string& clip_id) noexcept {
