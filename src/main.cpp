@@ -3,6 +3,7 @@
 #include "imgui_impl_sdl2.h"
 #include "model/project.hpp"
 #include "platform/platform_bridge.hpp"
+#include "ui/theme.hpp"
 
 #include <SDL.h>
 
@@ -671,6 +672,7 @@ void main_loop() {
 
   ImGui::NewFrame();
 
+  wasmcut::ui::pump_font_load();
   draw_ui();
   handle_shortcuts();
 
@@ -771,6 +773,26 @@ void wasmcut_set_viewport_size(int width, int height) {
   }
 }
 
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int wasmcut_load_fonts(const char* regular_path, const char* medium_path, const char* bold_path) {
+  const std::string regular = regular_path != nullptr ? regular_path : "";
+  const std::string medium = medium_path != nullptr ? medium_path : "";
+  const std::string bold = bold_path != nullptr ? bold_path : "";
+  if (regular.empty()) {
+    return 0;
+  }
+  return wasmcut::ui::load_fonts(regular, medium, bold) ? 1 : 0;
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+int wasmcut_fonts_ready() {
+  return wasmcut::ui::fonts_ready() ? 1 : 0;
+}
+
 }
 
 int main(int argc, char** argv) {
@@ -829,7 +851,8 @@ int main(int argc, char** argv) {
   ImGuiIO& io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.IniFilename = nullptr;
-  ImGui::StyleColorsDark();
+  wasmcut::ui::apply_theme();
+  wasmcut::ui::request_fonts();
 
   if (!ImGui_ImplSDL2_InitForOpenGL(window, gl_context)) {
     std::fprintf(stderr, "ImGui SDL2 initialization failed\n");

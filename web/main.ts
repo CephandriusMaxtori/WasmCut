@@ -1,6 +1,7 @@
 import createWasmcutModule from "./generated/wasmcut.js";
 import wasmUrl from "./generated/wasmcut.wasm?url";
 import { createBridge, type WasmcutModule } from "./bridge";
+import { installFonts } from "./fonts";
 import "./styles.css";
 
 async function start() {
@@ -30,6 +31,8 @@ async function start() {
 
   const wasmModule = module as unknown as WasmcutModule;
   bridge.attach(wasmModule);
+  const fontsReady = await installFonts(wasmModule);
+  document.documentElement.dataset.font = fontsReady ? "space-grotesk" : "fallback";
   setViewportSize = wasmModule.cwrap("wasmcut_set_viewport_size", null, ["number", "number"]) as (
     width: number,
     height: number

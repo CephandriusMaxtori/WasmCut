@@ -13,6 +13,7 @@
     "build": "npm run build:wasm && npm run build:web",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
+    "smoke": "node scripts/smoke.mjs",
     "test:model": "node build/model_tests.cjs",
     "check": "npm run typecheck"
   },

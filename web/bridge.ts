@@ -4,6 +4,10 @@ type CwrapFunction = (...args: unknown[]) => unknown;
 
 type WasmcutModule = {
   cwrap: (name: string, returnType: string | null, argumentTypes: string[]) => CwrapFunction;
+  FS?: {
+    mkdir: (path: string) => void;
+    writeFile: (path: string, data: Uint8Array) => void;
+  };
 };
 
 type WasmcutBridge = {

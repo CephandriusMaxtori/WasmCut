@@ -72,6 +72,7 @@ target_compile_features(wasmcut_model PUBLIC cxx_std_20)
 add_executable(wasmcut
   src/main.cpp
   src/platform/platform_bridge.cpp
+  src/ui/theme.cpp
 )
 
 target_include_directories(wasmcut PRIVATE src)
@@ -95,8 +96,8 @@ if(EMSCRIPTEN)
     "-sMODULARIZE=1"
     "-sEXPORT_ES6=1"
     "-sEXPORT_NAME=createWasmcutModule"
-    "-sEXPORTED_RUNTIME_METHODS=cwrap"
-    "-sEXPORTED_FUNCTIONS=_main,_wasmcut_set_status,_wasmcut_set_media_info,_wasmcut_set_playback_time,_wasmcut_set_playback_state,_wasmcut_set_progress,_wasmcut_set_viewport_size,_wasmcut_add_media_to_timeline"
+    "-sEXPORTED_RUNTIME_METHODS=cwrap,FS"
+    "-sEXPORTED_FUNCTIONS=_main,_wasmcut_set_status,_wasmcut_set_media_info,_wasmcut_set_playback_time,_wasmcut_set_playback_state,_wasmcut_set_progress,_wasmcut_set_viewport_size,_wasmcut_add_media_to_timeline,_wasmcut_load_fonts,_wasmcut_fonts_ready"
     "-sENVIRONMENT=web"
     "-sEXIT_RUNTIME=0"
   )
